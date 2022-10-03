@@ -84,8 +84,7 @@ WireGuard_Interface='wgcf'
 WireGuard_ConfPath="/etc/wireguard/${WireGuard_Interface}.conf"
 
 WireGuard_Interface_DNS_IPv4='8.8.8.8,8.8.4.4'
-WireGuard_Interface_DNS_46="${WireGuard_Interface_DNS_IPv4},${WireGuard_Interface_DNS_IPv6}"
-WireGuard_Interface_DNS_64="${WireGuard_Interface_DNS_IPv6},${WireGuard_Interface_DNS_IPv4}"
+WireGuard_Interface_DNS_64="${WireGuard_Interface_DNS_IPv4}"
 WireGuard_Interface_Rule_table='51888'
 WireGuard_Interface_Rule_fwmark='51888'
 WireGuard_Interface_MTU='1280'
@@ -94,7 +93,7 @@ WireGuard_Peer_Endpoint_IP4='162.159.193.1'
 WireGuard_Peer_Endpoint_IPv4="${WireGuard_Peer_Endpoint_IP4}:2408"
 WireGuard_Peer_Endpoint_Domain='engage.cloudflareclient.com:2408'
 WireGuard_Peer_AllowedIPs_IPv4='0.0.0.0/0'
-WireGuard_Peer_AllowedIPs_DualStack='0.0.0.0/0,::/0'
+WireGuard_Peer_AllowedIPs_DualStack='0.0.0.0/0'
 
 TestIPv4_1='1.0.0.1'
 TestIPv4_2='9.9.9.9'
