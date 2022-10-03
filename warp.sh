@@ -84,12 +84,15 @@ WireGuard_Interface='wgcf'
 WireGuard_ConfPath="/etc/wireguard/${WireGuard_Interface}.conf"
 
 WireGuard_Interface_DNS_IPv4='8.8.8.8,8.8.4.4'
+WireGuard_Interface_DNS_IPv6='2001:4860:4860::8888,2001:4860:4860::8844'
+WireGuard_Interface_DNS_46="${WireGuard_Interface_DNS_IPv4}"
 WireGuard_Interface_DNS_64="${WireGuard_Interface_DNS_IPv4}"
 WireGuard_Interface_Rule_table='51888'
 WireGuard_Interface_Rule_fwmark='51888'
 WireGuard_Interface_MTU='1280'
 
 WireGuard_Peer_Endpoint_IP4='162.159.193.1'
+WireGuard_Peer_Endpoint_IP6='2606:4700:d0::a29f:c001'
 WireGuard_Peer_Endpoint_IPv4="${WireGuard_Peer_Endpoint_IP4}:2408"
 WireGuard_Peer_Endpoint_Domain='engage.cloudflareclient.com:2408'
 WireGuard_Peer_AllowedIPs_IPv4='0.0.0.0/0'
@@ -485,6 +488,24 @@ Restart_WireGuard() {
     fi
 }
 
+Enable_IPv6_Support() {
+    if [[ $(sysctl -a | grep 'disable_ipv6.*=.*1') || $(cat /etc/sysctl.{conf,d/*} | grep 'disable_ipv6.*=.*1') ]]; then
+        sed -i '/disable_ipv6/d' /etc/sysctl.{conf,d/*}
+        echo 'net.ipv6.conf.all.disable_ipv6 = 0' >/etc/sysctl.d/ipv6.conf
+        sysctl -w net.ipv6.conf.all.disable_ipv6=0
+    fi
+}
+
+Enable_WireGuard() {
+    Enable_IPv6_Support
+    Check_WireGuard
+    if [[ ${WireGuard_SelfStart} = enabled ]]; then
+        Restart_WireGuard
+    else
+        Start_WireGuard
+    fi
+}
+
 Stop_WireGuard() {
     Check_WARP_Client
     if [[ ${WireGuard_Status} = active ]]; then
@@ -542,15 +563,31 @@ Check_Network_Status_IPv4() {
     fi
 }
 
+Check_Network_Status_IPv6() {
+    if ping6 -c1 -W1 ${TestIPv6_1} >/dev/null 2>&1 || ping6 -c1 -W1 ${TestIPv6_2} >/dev/null 2>&1; then
+        IPv6Status='on'
+    else
+        IPv6Status='off'
+    fi
+}
+
 Check_Network_Status() {
     Disable_WireGuard
     Check_Network_Status_IPv4
+    Check_Network_Status_IPv6
 }
 
 Check_IPv4_addr() {
     IPv4_addr=$(
         ip route get ${TestIPv4_1} 2>/dev/null | grep -oP 'src \K\S+' ||
             ip route get ${TestIPv4_2} 2>/dev/null | grep -oP 'src \K\S+'
+    )
+}
+
+Check_IPv6_addr() {
+    IPv6_addr=$(
+        ip route get ${TestIPv6_1} 2>/dev/null | grep -oP 'src \K\S+' ||
+            ip route get ${TestIPv6_2} 2>/dev/null | grep -oP 'src \K\S+'
     )
 }
 
@@ -565,6 +602,16 @@ Get_IP_addr() {
             log WARN "Network interface IPv4 address not obtained."
         fi
     fi
+    if [[ ${IPv6Status} = on ]]; then
+        log INFO "Getting the network interface IPv6 address..."
+        Check_IPv6_addr
+        if [[ ${IPv6_addr} ]]; then
+            log INFO "IPv6 Address: ${IPv6_addr}"
+        else
+            log WARN "Network interface IPv6 address not obtained."
+        fi
+    fi
+}
 
 Get_IPv4_addr() {
     log INFO "正在检测 IPv4 地址..."
@@ -591,11 +638,44 @@ Get_IPv4_addr() {
     fi
 }
 
+Get_IPv6_addr() {
+    log INFO "正在检测 IPv6 地址..."
+    Check_IPv6_addr
+    if [[ -z ${IPv6_addr} ]]; then
+        log ERROR "IPv6 地址自动检测失败！"
+        Input_IPv6_addr
+    else
+        log INFO "检测到 IPv6 地址：${FontColor_Purple}${IPv6_addr}${FontColor_Suffix}"
+        unset answer_YN
+        read -p "是否需要修改？[y/N] " answer_YN
+        case ${answer_YN:-n} in
+        Y | y)
+            Input_IPv6_addr
+            ;;
+        N | n)
+            echo
+            ;;
+        *)
+            log ERROR "无效输入！"
+            Get_IPv6_addr
+            ;;
+        esac
+    fi
+}
+
 Input_IPv4_addr() {
     read -p "请输入 IPv4 地址：" IPv4_addr
     if [[ -z ${IPv4_addr} ]]; then
         log ERROR "无效输入！"
         Get_IPv4_addr
+    fi
+}
+
+Input_IPv6_addr() {
+    read -p "请输入 IPv6 地址：" IPv6_addr
+    if [[ -z ${IPv6_addr} ]]; then
+        log ERROR "无效输入！"
+        Get_IPv6_addr
     fi
 }
 
@@ -665,15 +745,35 @@ PostDown = ip -4 rule delete table main suppress_prefixlength 0
 EOF
 }
 
+Generate_WireGuardProfile_Interface_Rule_IPv6_nonGlobal() {
+    cat <<EOF >>${WireGuard_ConfPath}
+PostUP = ip -6 route add default dev ${WireGuard_Interface} table ${WireGuard_Interface_Rule_table}
+PostUP = ip -6 rule add from ${WireGuard_Interface_Address_IPv6} lookup ${WireGuard_Interface_Rule_table}
+PostDown = ip -6 rule delete from ${WireGuard_Interface_Address_IPv6} lookup ${WireGuard_Interface_Rule_table}
+PostUP = ip -6 rule add fwmark ${WireGuard_Interface_Rule_fwmark} lookup ${WireGuard_Interface_Rule_table}
+PostDown = ip -6 rule delete fwmark ${WireGuard_Interface_Rule_fwmark} lookup ${WireGuard_Interface_Rule_table}
+PostUP = ip -6 rule add table main suppress_prefixlength 0
+PostDown = ip -6 rule delete table main suppress_prefixlength 0
+EOF
+}
+
 Generate_WireGuardProfile_Interface_Rule_DualStack_nonGlobal() {
     Generate_WireGuardProfile_Interface_Rule_TableOff
     Generate_WireGuardProfile_Interface_Rule_IPv4_nonGlobal
+    Generate_WireGuardProfile_Interface_Rule_IPv6_nonGlobal
 }
 
 Generate_WireGuardProfile_Interface_Rule_IPv4_Global_srcIP() {
     cat <<EOF >>${WireGuard_ConfPath}
 PostUp = ip -4 rule add from ${IPv4_addr} lookup main prio 18
 PostDown = ip -4 rule delete from ${IPv4_addr} lookup main prio 18
+EOF
+}
+
+Generate_WireGuardProfile_Interface_Rule_IPv6_Global_srcIP() {
+    cat <<EOF >>${WireGuard_ConfPath}
+PostUp = ip -6 rule add from ${IPv6_addr} lookup main prio 18
+PostDown = ip -6 rule delete from ${IPv6_addr} lookup main prio 18
 EOF
 }
 
@@ -764,7 +864,41 @@ Check_WARP_WireGuard_Status() {
         if [[ ${IPv4Status} = on ]]; then
             WARP_IPv4_Status_en="Normal"
             WARP_IPv4_Status_zh="正常"
-
+        else
+            WARP_IPv4_Status_en="${FontColor_Red}Unconnected${FontColor_Suffix}"
+            WARP_IPv4_Status_zh="${FontColor_Red}未连接${FontColor_Suffix}"
+        fi
+        ;;
+    esac
+    Check_Network_Status_IPv6
+    if [[ ${IPv6Status} = on ]]; then
+        WARP_IPv6_Status=$(curl -s6 ${CF_Trace_URL} --connect-timeout 2 | grep warp | cut -d= -f2)
+    else
+        unset WARP_IPv6_Status
+    fi
+    case ${WARP_IPv6_Status} in
+    on)
+        WARP_IPv6_Status_en="${FontColor_Green}WARP${FontColor_Suffix}"
+        WARP_IPv6_Status_zh="${WARP_IPv6_Status_en}"
+        ;;
+    plus)
+        WARP_IPv6_Status_en="${FontColor_Green}WARP+${FontColor_Suffix}"
+        WARP_IPv6_Status_zh="${WARP_IPv6_Status_en}"
+        ;;
+    off)
+        WARP_IPv6_Status_en="Normal"
+        WARP_IPv6_Status_zh="正常"
+        ;;
+    *)
+        Check_Network_Status_IPv6
+        if [[ ${IPv6Status} = on ]]; then
+            WARP_IPv6_Status_en="Normal"
+            WARP_IPv6_Status_zh="正常"
+        else
+            WARP_IPv6_Status_en="${FontColor_Red}Unconnected${FontColor_Suffix}"
+            WARP_IPv6_Status_zh="${FontColor_Red}未连接${FontColor_Suffix}"
+        fi
+        ;;
     esac
 }
 
@@ -854,6 +988,27 @@ Set_WARP_IPv4() {
     Print_WARP_WireGuard_Status
 }
 
+Set_WARP_IPv6() {
+    Install_WireGuard
+    Get_IP_addr
+    Load_WGCF_Profile
+    if [[ ${IPv4Status} = off && ${IPv6Status} = on ]]; then
+        WireGuard_Interface_DNS="${WireGuard_Interface_DNS_64}"
+    else
+        WireGuard_Interface_DNS="${WireGuard_Interface_DNS_46}"
+    fi
+    WireGuard_Peer_AllowedIPs="${WireGuard_Peer_AllowedIPs_IPv6}"
+    Check_WireGuard_Peer_Endpoint
+    Generate_WireGuardProfile_Interface
+    if [[ -n ${IPv6_addr} ]]; then
+        Generate_WireGuardProfile_Interface_Rule_IPv6_Global_srcIP
+    fi
+    Generate_WireGuardProfile_Peer
+    View_WireGuard_Profile
+    Enable_WireGuard
+    Print_WARP_WireGuard_Status
+}
+
 Set_WARP_DualStack() {
     Install_WireGuard
     Get_IP_addr
@@ -865,7 +1020,9 @@ Set_WARP_DualStack() {
     if [[ -n ${IPv4_addr} ]]; then
         Generate_WireGuardProfile_Interface_Rule_IPv4_Global_srcIP
     fi
-    
+    if [[ -n ${IPv6_addr} ]]; then
+        Generate_WireGuardProfile_Interface_Rule_IPv6_Global_srcIP
+    fi
     Generate_WireGuardProfile_Peer
     View_WireGuard_Profile
     Enable_WireGuard
@@ -887,6 +1044,21 @@ Set_WARP_DualStack_nonGlobal() {
     Print_WARP_WireGuard_Status
 }
 
+Add_WARP_IPv4__Change_WARP_IPv6() {
+    Install_WireGuard
+    Get_IPv6_addr
+    Load_WGCF_Profile
+    WireGuard_Interface_DNS="${WireGuard_Interface_DNS_64}"
+    WireGuard_Peer_AllowedIPs="${WireGuard_Peer_AllowedIPs_DualStack}"
+    WireGuard_Peer_Endpoint="${WireGuard_Peer_Endpoint_IPv6}"
+    Generate_WireGuardProfile_Interface
+    Generate_WireGuardProfile_Interface_Rule_IPv6_Global_srcIP
+    Generate_WireGuardProfile_Peer
+    View_WireGuard_Profile
+    Enable_WireGuard
+    Print_WARP_WireGuard_Status
+}
+
 Add_WARP_IPv6__Change_WARP_IPv4() {
     Install_WireGuard
     Get_IPv4_addr
@@ -896,6 +1068,21 @@ Add_WARP_IPv6__Change_WARP_IPv4() {
     WireGuard_Peer_Endpoint="${WireGuard_Peer_Endpoint_IPv4}"
     Generate_WireGuardProfile_Interface
     Generate_WireGuardProfile_Interface_Rule_IPv4_Global_srcIP
+    Generate_WireGuardProfile_Peer
+    View_WireGuard_Profile
+    Enable_WireGuard
+    Print_WARP_WireGuard_Status
+}
+
+Change_WARP_IPv6() {
+    Install_WireGuard
+    Get_IPv6_addr
+    Load_WGCF_Profile
+    WireGuard_Interface_DNS="${WireGuard_Interface_DNS_46}"
+    WireGuard_Peer_AllowedIPs="${WireGuard_Peer_AllowedIPs_IPv6}"
+    WireGuard_Peer_Endpoint="${WireGuard_Peer_Endpoint_IPv6}"
+    Generate_WireGuardProfile_Interface
+    Generate_WireGuardProfile_Interface_Rule_IPv6_Global_srcIP
     Generate_WireGuardProfile_Peer
     View_WireGuard_Profile
     Enable_WireGuard
@@ -920,12 +1107,14 @@ Change_WARP_IPv4() {
 Change_WARP_DualStack_IPv4Out() {
     Install_WireGuard
     Get_IPv4_addr
+    Get_IPv6_addr
     Load_WGCF_Profile
     WireGuard_Interface_DNS="${WireGuard_Interface_DNS_46}"
     WireGuard_Peer_AllowedIPs="${WireGuard_Peer_AllowedIPs_DualStack}"
     WireGuard_Peer_Endpoint="${WireGuard_Peer_Endpoint_IPv4}"
     Generate_WireGuardProfile_Interface
     Generate_WireGuardProfile_Interface_Rule_IPv4_Global_srcIP
+    Generate_WireGuardProfile_Interface_Rule_IPv6_Global_srcIP
     Generate_WireGuardProfile_Peer
     View_WireGuard_Profile
     Enable_WireGuard
@@ -939,8 +1128,10 @@ Change_WARP_DualStack_IPv6Out() {
     Load_WGCF_Profile
     WireGuard_Interface_DNS="${WireGuard_Interface_DNS_46}"
     WireGuard_Peer_AllowedIPs="${WireGuard_Peer_AllowedIPs_DualStack}"
+    WireGuard_Peer_Endpoint="${WireGuard_Peer_Endpoint_IPv6}"
     Generate_WireGuardProfile_Interface
     Generate_WireGuardProfile_Interface_Rule_IPv4_Global_srcIP
+    Generate_WireGuardProfile_Interface_Rule_IPv6_Global_srcIP
     Generate_WireGuardProfile_Peer
     View_WireGuard_Profile
     Enable_WireGuard
